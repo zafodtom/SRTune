@@ -1,0 +1,103 @@
+name: SRTune Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build and optionally publish (X.Y.Z)
+        type: string
+        required: true
+      publish_release:
+        description: Publish a stable public GitHub Release for in-app updates
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: srtune-windows-release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 50
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Version must use X.Y.Z SemVer.' }
+          "VERSION=$env:VERSION" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Enable MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install build tools
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check meson ninja
+          choco install innosetup nasm --yes --no-progress
+
+      - name: Restore WinUI NuGet packages
+        shell: pwsh
+        run: nuget restore winui/Aegisub.WinUI/Aegisub.WinUI/packages.config -PackagesDirectory winui/Aegisub.WinUI/packages -NonInteractive
+
+      - name: Build SRTune installer and portable package
+        shell: pwsh
+        run: ./tools/build-srtune-release.ps1 -Version $env:VERSION
+
+      - name: Validate update package
+        shell: pwsh
+        run: |
+          $installer = "dist/SRTune-$env:VERSION-Setup-x64.exe"
+          $portable = "dist/SRTune-$env:VERSION-portable-x64.zip"
+          $manifest = "dist/srtune-update.json"
+          foreach ($file in @($installer, $portable, $manifest, "dist/SHA256SUMS.txt")) { if (-not (Test-Path $file)) { throw "Missing release file: $file" } }
+          $json = Get-Content $manifest -Raw | ConvertFrom-Json
+          if ($json.schema -ne 1 -or $json.version -ne $env:VERSION) { throw 'Invalid update manifest.' }
+          if ($json.installer.name -ne "SRTune-$env:VERSION-Setup-x64.exe") { throw 'Unexpected installer name in manifest.' }
+          if ([int64]$json.installer.size -ne (Get-Item $installer).Length) { throw 'Installer size in manifest does not match.' }
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($json.installer.sha256 -ne $hash) { throw 'Installer SHA-256 in manifest does not match.' }
+
+      - name: Upload release package for testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: SRTune-${{ inputs.version }}-windows-x64
+          path: |
+            dist/SRTune-${{ inputs.version }}-Setup-x64.exe
+            dist/SRTune-${{ inputs.version }}-portable-x64.zip
+            dist/SHA256SUMS.txt
+            dist/srtune-update.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish stable release (manual opt-in only)
+        if: ${{ inputs.publish_release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = $env:GITHUB_REPOSITORY
+          $private = gh api "repos/$repo" --jq '.private'
+          if ($LASTEXITCODE -ne 0 -or $private -ne 'false') { throw 'Public repository is required for in-app updates.' }
+          $tag = "v$env:VERSION"
+          gh release view $tag --repo $repo *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists. Never replace published update assets." }
+          $notes = "docs/releases/$env:VERSION.md"
+          if (-not (Test-Path $notes)) { throw "Release notes missing: $notes" }
+          gh release create $tag "dist/SRTune-$env:VERSION-Setup-x64.exe" "dist/SRTune-$env:VERSION-portable-x64.zip" "dist/SHA256SUMS.txt" "dist/srtune-update.json" --repo $repo --target $env:GITHUB_SHA --title "SRTune $env:VERSION by Trimenor" --notes-file $notes --draft
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }
+          gh release edit $tag --repo $repo --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Publishing failed; inspect the draft release.' }
