@@ -1,103 +1,172 @@
-name: SRTune Windows Release
+name: SRTune Windows Build and Release
 
 on:
+  push:
+    branches:
+      - master
+      - 'feature/**'
   workflow_dispatch:
     inputs:
-      version:
-        description: Version to build and optionally publish (X.Y.Z)
-        type: string
-        required: true
       publish_release:
-        description: Publish a stable public GitHub Release for in-app updates
+        description: Publish next stable release (master only)
         type: boolean
         required: false
         default: false
+      release_version:
+        description: Optional stable version override (X.Y.Z); blank = next patch automatically
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: srtune-windows-release
-  cancel-in-progress: false
+  group: srtune-windows-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   windows:
+    name: Windows x64 installer
     runs-on: windows-2022
-    timeout-minutes: 50
+    timeout-minutes: 60
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Validate version
+      - name: Set up Python and Meson
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Find Visual Studio
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw 'Visual Studio with C++ tools was not found.' }
+          "VS=$vsPath" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip setuptools meson
+          choco install ninja innosetup --yes --no-progress
+          $moonscriptUrl = 'https://github.com/leafo/moonscript/releases/download/v0.6.0/moonscript-v0.6.0-windows-x86_64.zip'
+          New-Item -ItemType Directory -Force moonscript | Out-Null
+          Invoke-WebRequest -Uri $moonscriptUrl -OutFile '.\moonscript\moonscript.zip'
+          Push-Location moonscript
+          7z e moonscript.zip | Out-Null
+          (Get-Location).Path | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          Pop-Location
+          $gettextUrl = 'https://github.com/mlocati/gettext-iconv-windows/releases/download/v1.0-v1.18-r3/gettext1.0-iconv1.18-static-64.zip'
+          Invoke-WebRequest -Uri $gettextUrl -OutFile '.\gettext.zip'
+          Expand-Archive '.\gettext.zip' -DestinationPath gettext
+          (Resolve-Path '.\gettext\bin').Path | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Determine package version automatically
         shell: pwsh
         env:
-          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
         run: |
-          if ($env:VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Version must use X.Y.Z SemVer.' }
-          "VERSION=$env:VERSION" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $latestTag = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq '.tag_name'
+          if ($LASTEXITCODE -ne 0 -or -not $latestTag -or -not $latestTag.StartsWith('v')) { throw 'Could not determine latest stable release.' }
+          $latestText = $latestTag.Substring(1)
+          if ($latestText -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Latest stable tag is not SemVer: $latestTag" }
+          $latest = [version]$latestText
+          if ($env:PUBLISH_RELEASE -eq 'true') {
+            if ($env:GITHUB_REF -ne 'refs/heads/master') { throw 'Stable releases can only be published from master.' }
+            if ($env:RELEASE_VERSION) {
+              if ($env:RELEASE_VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'release_version must use X.Y.Z.' }
+              $requested = [version]$env:RELEASE_VERSION
+              if ($requested -le $latest) { throw "Stable release version must be newer than $latestText." }
+              $versionText = $env:RELEASE_VERSION
+            } else {
+              $versionText = "$($latest.Major).$($latest.Minor).$($latest.Build + 1)"
+            }
+          } else {
+            $versionText = $latestText
+          }
+          "VERSION=$versionText" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "LATEST_STABLE=$latestText" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Package version: $versionText"
 
-      - name: Enable MSVC developer environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Install build tools
+      - name: Configure release bridge
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check meson ninja
-          choco install innosetup nasm --yes --no-progress
+          Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          meson setup build-srtune-release -Dbuildtype=release -Ddefault_library=static --force-fallback-for=zlib,harfbuzz,freetype2,fribidi,libpng -Dfallback_nasm=true -Dfreetype2:harfbuzz=disabled -Dharfbuzz:freetype=disabled -Dharfbuzz:cairo=disabled -Dharfbuzz:glib=disabled -Dharfbuzz:gobject=disabled -Dharfbuzz:tests=disabled -Dharfbuzz:docs=disabled -Dfribidi:tests=false -Dfribidi:docs=false -Dlibass:fontconfig=disabled
+
+      - name: Build bridge
+        shell: pwsh
+        run: |
+          Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          meson compile -C build-srtune-release aegisub-winui-bridge
 
       - name: Restore WinUI NuGet packages
         shell: pwsh
         run: nuget restore winui/Aegisub.WinUI/Aegisub.WinUI/packages.config -PackagesDirectory winui/Aegisub.WinUI/packages -NonInteractive
 
-      - name: Build SRTune installer and portable package
-        shell: pwsh
-        run: ./tools/build-srtune-release.ps1 -Version $env:VERSION
-
-      - name: Validate update package
+      - name: Build SRTune, updater, installer and portable package
         shell: pwsh
         run: |
+          Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          ./tools/build-srtune-release.ps1 -Version $env:VERSION -SkipBridge
+
+      - name: Validate complete package
+        shell: pwsh
+        run: |
+          $stage = "dist/SRTune-$env:VERSION-x64"
           $installer = "dist/SRTune-$env:VERSION-Setup-x64.exe"
           $portable = "dist/SRTune-$env:VERSION-portable-x64.zip"
-          $manifest = "dist/srtune-update.json"
-          foreach ($file in @($installer, $portable, $manifest, "dist/SHA256SUMS.txt")) { if (-not (Test-Path $file)) { throw "Missing release file: $file" } }
+          $manifest = 'dist/srtune-update.json'
+          $checksums = 'dist/SHA256SUMS.txt'
+          foreach ($file in @("$stage/SRTune.exe", "$stage/SRTune.Update.exe", "$stage/aegisub-winui-bridge.exe", "$stage/ffmpeg.exe", $installer, $portable, $manifest, $checksums)) {
+            if (-not (Test-Path $file)) { throw "Missing package file: $file" }
+          }
           $json = Get-Content $manifest -Raw | ConvertFrom-Json
           if ($json.schema -ne 1 -or $json.version -ne $env:VERSION) { throw 'Invalid update manifest.' }
           if ($json.installer.name -ne "SRTune-$env:VERSION-Setup-x64.exe") { throw 'Unexpected installer name in manifest.' }
           if ([int64]$json.installer.size -ne (Get-Item $installer).Length) { throw 'Installer size in manifest does not match.' }
-          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($json.installer.sha256 -ne $hash) { throw 'Installer SHA-256 in manifest does not match.' }
+          $actualHash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($json.installer.sha256 -ne $actualHash) { throw 'Installer SHA-256 in manifest does not match.' }
+          Write-Host 'SRTune package validation passed.'
 
-      - name: Upload release package for testing
+      - name: Upload ready-to-install package
         uses: actions/upload-artifact@v4
         with:
-          name: SRTune-${{ inputs.version }}-windows-x64
+          name: SRTune-${{ env.VERSION }}-${{ github.ref_name }}-windows-x64
           path: |
-            dist/SRTune-${{ inputs.version }}-Setup-x64.exe
-            dist/SRTune-${{ inputs.version }}-portable-x64.zip
+            dist/SRTune-${{ env.VERSION }}-Setup-x64.exe
+            dist/SRTune-${{ env.VERSION }}-portable-x64.zip
             dist/SHA256SUMS.txt
             dist/srtune-update.json
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish stable release (manual opt-in only)
-        if: ${{ inputs.publish_release }}
+      - name: Publish next stable GitHub Release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $repo = $env:GITHUB_REPOSITORY
-          $private = gh api "repos/$repo" --jq '.private'
-          if ($LASTEXITCODE -ne 0 -or $private -ne 'false') { throw 'Public repository is required for in-app updates.' }
+          $private = gh api "repos/$env:GITHUB_REPOSITORY" --jq '.private'
+          if ($LASTEXITCODE -ne 0 -or $private -ne 'false') { throw 'Public repository is required for integrated updates.' }
           $tag = "v$env:VERSION"
-          gh release view $tag --repo $repo *> $null
-          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists. Never replace published update assets." }
-          $notes = "docs/releases/$env:VERSION.md"
-          if (-not (Test-Path $notes)) { throw "Release notes missing: $notes" }
-          gh release create $tag "dist/SRTune-$env:VERSION-Setup-x64.exe" "dist/SRTune-$env:VERSION-portable-x64.zip" "dist/SHA256SUMS.txt" "dist/srtune-update.json" --repo $repo --target $env:GITHUB_SHA --title "SRTune $env:VERSION by Trimenor" --notes-file $notes --draft
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists. Published update assets are never replaced." }
+          gh release create $tag "dist/SRTune-$env:VERSION-Setup-x64.exe" "dist/SRTune-$env:VERSION-portable-x64.zip" "dist/SHA256SUMS.txt" "dist/srtune-update.json" --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "SRTune $env:VERSION by Trimenor" --generate-notes --draft
           if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }
-          gh release edit $tag --repo $repo --draft=false --latest
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
           if ($LASTEXITCODE -ne 0) { throw 'Publishing failed; inspect the draft release.' }
+          Write-Host "Published stable release $tag"
