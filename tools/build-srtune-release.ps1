@@ -1,10 +1,14 @@
 param(
     [string]$Version = "1.0.0",
     [switch]$SkipBridge,
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+    [switch]$BuildOnly,
+    [switch]$PackageOnly
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($BuildOnly -and $PackageOnly) { throw "BuildOnly and PackageOnly cannot be combined." }
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Project = Join-Path $Root "winui\Aegisub.WinUI\Aegisub.WinUI\Aegisub.WinUI.vcxproj"
@@ -88,6 +92,7 @@ function New-PortableZip([string]$SourceDirectory, [string]$DestinationZip) {
     throw "Portable ZIP se nepodařilo vytvořit ani po opakování: $lastError"
 }
 
+if (-not $PackageOnly) {
 Require-Command "msbuild"
 
 if (-not $SkipBridge) {
@@ -135,6 +140,15 @@ $FfmpegNotice = Join-Path $Root "winui\Aegisub.WinUI\Aegisub.WinUI\External\FFMP
 if (Test-Path $FfmpegNotice) {
     Copy-Item -Force $FfmpegNotice (Join-Path $Stage "FFMPEG-NOTICE.txt")
 }
+
+if ($BuildOnly) {
+    Write-Host "[SRTune] Build-only completed; staging directory is ready: $Stage"
+    return
+}
+}
+
+if (-not (Test-Path (Join-Path $Stage "SRTune.exe"))) { throw "Staged application missing: $Stage" }
+if (-not (Test-Path (Join-Path $Stage "SRTune.Update.exe"))) { throw "Staged updater missing: $Stage" }
 
 New-PortableZip -SourceDirectory $Stage -DestinationZip $Portable
 
