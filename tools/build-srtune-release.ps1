@@ -143,8 +143,9 @@ Write-Host "[SRTune] Portable package:"
 Write-Host "  $Portable"
 
 if (-not $SkipInstaller) {
-    $Iscc = Get-Command "iscc.exe" -ErrorAction SilentlyContinue
-    if (-not $Iscc) {
+    $IsccCommand = Get-Command "iscc.exe" -ErrorAction SilentlyContinue
+    $IsccPath = if ($IsccCommand) { $IsccCommand.Source } else { $null }
+    if (-not $IsccPath) {
         $ProgramFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
         $Candidates = @(
             (Join-Path $ProgramFilesX86 "Inno Setup 6\ISCC.exe"),
@@ -155,13 +156,13 @@ if (-not $SkipInstaller) {
 
         foreach ($Candidate in $Candidates) {
             if ($Candidate -and (Test-Path $Candidate)) {
-                $Iscc = Get-Item $Candidate
+                $IsccPath = $Candidate
                 break
             }
         }
     }
 
-    if (-not $Iscc) {
+    if (-not $IsccPath) {
         $UninstallRoots = @(
             "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
             "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -176,7 +177,7 @@ if (-not $SkipInstaller) {
                 if ($Entry.InstallLocation) {
                     $Candidate = Join-Path $Entry.InstallLocation "ISCC.exe"
                     if (Test-Path $Candidate) {
-                        $Iscc = Get-Item $Candidate
+                        $IsccPath = $Candidate
                         break
                     }
                 }
@@ -187,18 +188,18 @@ if (-not $SkipInstaller) {
                     if ($InstallDir) {
                         $Candidate = Join-Path $InstallDir "ISCC.exe"
                         if (Test-Path $Candidate) {
-                            $Iscc = Get-Item $Candidate
+                            $IsccPath = $Candidate
                             break
                         }
                     }
                 }
             }
 
-            if ($Iscc) { break }
+            if ($IsccPath) { break }
         }
     }
 
-    if ($Iscc) {
+    if ($IsccPath) {
         $InstallerScript = Join-Path $Root "installer\SRTune.iss"
         $InstallerFinalBaseName = "SRTune-" + $Version + "-Setup-x64"
         $InstallerFinalExe = Join-Path $Dist ($InstallerFinalBaseName + ".exe")
@@ -224,7 +225,7 @@ if (-not $SkipInstaller) {
                     $InstallerScript
                 )
 
-                & $Iscc.FullName $IsccArgs
+                & $IsccPath $IsccArgs
                 $InnoExitCode = $LASTEXITCODE
 
                 if ($InnoExitCode -eq 0 -and (Test-Path $InstallerTempExe)) {
