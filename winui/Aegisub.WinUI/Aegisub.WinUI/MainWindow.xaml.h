@@ -171,6 +171,8 @@ namespace winrt::SRTune::implementation
             winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
         void ToggleOriginalPanelMenuItem_Click(winrt::Windows::Foundation::IInspectable const& sender,
             winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
+        void CheckUpdatesMenuItem_Click(winrt::Windows::Foundation::IInspectable const& sender,
+            winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
         void MergeSelectedSubtitlesButton_Click(winrt::Windows::Foundation::IInspectable const& sender,
             winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
         void JoinNextSubtitleButton_Click(winrt::Windows::Foundation::IInspectable const& sender,
