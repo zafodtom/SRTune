@@ -4186,6 +4186,160 @@ namespace winrt::SRTune::implementation
         RenderWaveform();
     }
 
+    void MainWindow::CheckUpdatesMenuItem_Click(
+        Windows::Foundation::IInspectable const&,
+        RoutedEventArgs const&)
+    {
+        if (m_videoBurnInProgress)
+        {
+            MessageBoxW(GetActiveWindow(),
+                L"Nejprve dokončete vypalování titulků do videa.",
+                L"Aktualizace SRTune", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+
+        wchar_t moduleBuffer[32768]{};
+        auto const moduleLength = GetModuleFileNameW(
+            nullptr, moduleBuffer, static_cast<DWORD>(std::size(moduleBuffer)));
+        if (!moduleLength || moduleLength >= std::size(moduleBuffer))
+        {
+            MessageBoxW(GetActiveWindow(),
+                L"Nepodařilo se zjistit umístění SRTune.",
+                L"Aktualizace SRTune", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        auto const appPath = std::filesystem::path{ moduleBuffer };
+        auto const appDir = appPath.parent_path();
+
+        bool installed = false;
+        std::error_code error;
+        for (auto const& entry : std::filesystem::directory_iterator(appDir, error))
+        {
+            if (error)
+                break;
+            if (!entry.is_regular_file())
+                continue;
+
+            auto name = entry.path().filename().wstring();
+            std::transform(name.begin(), name.end(), name.begin(),
+                [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+            if (name.rfind(L"unins", 0) == 0 &&
+                entry.path().extension() == L".exe")
+            {
+                installed = true;
+                break;
+            }
+        }
+
+        if (!installed)
+        {
+            MessageBoxW(GetActiveWindow(),
+                L"Integrované aktualizace jsou určené pro nainstalovanou verzi SRTune.\n\n"
+                L"Portable verzi aktualizujte nahrazením novým ZIP balíčkem.",
+                L"Aktualizace SRTune", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+
+        auto const installedHelper = appDir / L"SRTune.Update.exe";
+        if (!std::filesystem::exists(installedHelper))
+        {
+            MessageBoxW(GetActiveWindow(),
+                L"Chybí SRTune.Update.exe. Tato instalace nepodporuje integrované aktualizace.",
+                L"Aktualizace SRTune", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        auto const tempRoot = std::filesystem::temp_directory_path(error);
+        if (error)
+        {
+            MessageBoxW(GetActiveWindow(),
+                L"Nepodařilo se otevřít dočasnou složku Windows.",
+                L"Aktualizace SRTune", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        // Remove only update handoffs explicitly marked as completed.
+        for (auto const& entry : std::filesystem::directory_iterator(tempRoot, error))
+        {
+            if (error)
+                break;
+            if (!entry.is_directory())
+                continue;
+
+            auto const name = entry.path().filename().wstring();
+            if (name.rfind(L"SRTune-update-", 0) != 0)
+                continue;
+            if (!std::filesystem::exists(entry.path() / L"completed"))
+                continue;
+
+            std::error_code cleanupError;
+            std::filesystem::remove_all(entry.path(), cleanupError);
+        }
+
+        auto const updateFolder = tempRoot /
+            (L"SRTune-update-" + std::to_wstring(GetCurrentProcessId()) +
+             L"-" + std::to_wstring(GetTickCount64()));
+        std::filesystem::create_directories(updateFolder, error);
+        if (error)
+        {
+            MessageBoxW(GetActiveWindow(),
+                L"Nepodařilo se vytvořit dočasnou složku aktualizace.",
+                L"Aktualizace SRTune", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        auto const helperCopy = updateFolder / L"SRTune.Update.exe";
+        std::filesystem::copy_file(installedHelper, helperCopy,
+            std::filesystem::copy_options::overwrite_existing, error);
+        if (error)
+        {
+            std::error_code cleanupError;
+            std::filesystem::remove_all(updateFolder, cleanupError);
+            MessageBoxW(GetActiveWindow(),
+                L"Nepodařilo se připravit aktualizační helper.",
+                L"Aktualizace SRTune", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        auto quoteArgument = [](std::wstring const& value)
+        {
+            std::wstring result = L"\"";
+            result += value;
+            result += L"\"";
+            return result;
+        };
+
+        auto commandLine =
+            quoteArgument(helperCopy.wstring()) + L" " +
+            std::to_wstring(GetCurrentProcessId()) + L" " +
+            quoteArgument(appPath.wstring());
+
+        std::vector<wchar_t> mutableCommand(
+            commandLine.begin(), commandLine.end());
+        mutableCommand.push_back(L'\0');
+
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(
+                helperCopy.c_str(), mutableCommand.data(),
+                nullptr, nullptr, FALSE, 0,
+                nullptr, updateFolder.c_str(),
+                &startup, &process))
+        {
+            std::error_code cleanupError;
+            std::filesystem::remove_all(updateFolder, cleanupError);
+            MessageBoxW(GetActiveWindow(),
+                L"Aktualizaci se nepodařilo spustit.",
+                L"Aktualizace SRTune", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+
     void MainWindow::RefreshBackupAction()
     {
         bool available = false;
