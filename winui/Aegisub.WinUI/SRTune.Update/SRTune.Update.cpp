@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cwctype>
+#include <iterator>
 #include <filesystem>
 #include <fstream>
 #include <regex>
@@ -724,6 +726,29 @@ namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
+    HANDLE singleton = CreateMutexW(nullptr, TRUE, L"Local\\SRTune.Update.Singleton");
+    if (!singleton)
+        return 1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        CloseHandle(singleton);
+        message(L"Kontrola aktualizace SRTune už běží.");
+        return 0;
+    }
+
+    struct SingletonGuard
+    {
+        HANDLE handle{};
+        ~SingletonGuard()
+        {
+            if (handle)
+            {
+                ReleaseMutex(handle);
+                CloseHandle(handle);
+            }
+        }
+    } singletonGuard{ singleton };
+
     int argc{};
     auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv || argc != 3)
