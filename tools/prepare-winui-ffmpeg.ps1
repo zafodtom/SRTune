@@ -22,6 +22,35 @@ if (Test-Path $Destination) {
     }
 }
 
+function Expand-ZipCompat {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Archive,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    if (Test-Path $Destination) {
+        Remove-Item -Recurse -Force $Destination
+    }
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+
+    $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if ($tar) {
+        & $tar.Source -xf $Archive -C $Destination
+        if ($LASTEXITCODE -ne 0) {
+            throw "tar.exe failed while extracting FFmpeg (exit code $LASTEXITCODE)."
+        }
+        return
+    }
+
+    # Windows PowerShell 5.1 on some GitHub runner images can route
+    # Expand-Archive to an unsupported ExtractToDirectory overload.
+    # The two-argument ZipFile API works on the older .NET Framework too.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Destination)
+}
+
 function Find-Ffmpeg {
     $command = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
     if ($command -and $command.Source -and (Test-Path $command.Source)) {
@@ -54,7 +83,7 @@ if (-not $source) {
     New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 
     Invoke-WebRequest -UseBasicParsing -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $archive
-    Expand-Archive -Path $archive -DestinationPath $extract -Force
+    Expand-ZipCompat -Archive $archive -Destination $extract
     $source = Get-ChildItem -Path $extract -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1 -ExpandProperty FullName
 
     if (-not $source) {
