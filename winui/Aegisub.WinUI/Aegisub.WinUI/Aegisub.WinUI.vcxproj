@@ -237,6 +237,11 @@
   <Target Name="PrepareBundledFfmpeg" BeforeTargets="PrepareForBuild" Condition="'$(Platform)'=='x64'">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\..\..\tools\prepare-winui-ffmpeg.ps1&quot; -Destination &quot;$(ProjectDir)$(WinUiBundledFfmpegPath)&quot;" />
   </Target>
+  <Target Name="BuildSRTuneUpdateHelper" AfterTargets="Build" Condition="'$(Platform)'=='x64'">
+    <MSBuild Projects="$(ProjectDir)..\SRTune.Update\SRTune.Update.vcxproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);Platform=x64;OutDir=$(OutDir)" />
+  </Target>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>Tento projekt odkazuje na balíčky NuGet, které nejsou v tomto počítači k dispozici. Když je chcete stáhnout, použijte funkci obnovení balíčků NuGet.  Další informace najdete na adrese http://go.microsoft.com/fwlink/?LinkID=322105. Chybějícím souborem je soubor {0}.</ErrorText>
