@@ -26,12 +26,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
-  windows:
-    name: Windows x64 installer
+  build:
+    name: Build Windows x64 application
     runs-on: windows-2022
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout selected branch
@@ -56,7 +58,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip setuptools meson
-          choco install ninja innosetup --yes --no-progress
+          choco install ninja --yes --no-progress
           $moonscriptUrl = 'https://github.com/leafo/moonscript/releases/download/v0.6.0/moonscript-v0.6.0-windows-x86_64.zip'
           New-Item -ItemType Directory -Force moonscript | Out-Null
           Invoke-WebRequest -Uri $moonscriptUrl -OutFile '.\moonscript\moonscript.zip'
@@ -70,6 +72,7 @@ jobs:
           (Resolve-Path '.\gettext\bin').Path | Out-File $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Determine package version automatically
+        id: version
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -95,6 +98,7 @@ jobs:
             $versionText = $latestText
           }
           "VERSION=$versionText" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "version=$versionText" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
           "LATEST_STABLE=$latestText" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Package version: $versionText"
 
@@ -116,12 +120,48 @@ jobs:
         shell: pwsh
         run: nuget restore winui/Aegisub.WinUI/Aegisub.WinUI/packages.config -PackagesDirectory winui/Aegisub.WinUI/packages -NonInteractive
 
-      - name: Build SRTune, updater, installer and portable package
+      - name: Build SRTune and updater
         shell: pwsh
         run: |
           Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-          ./tools/build-srtune-release.ps1 -Version $env:VERSION -SkipBridge
+          ./tools/build-srtune-release.ps1 -Version $env:VERSION -SkipBridge -BuildOnly
+
+      - name: Save compiled application for packaging
+        uses: actions/upload-artifact@v4
+        with:
+          name: srtune-stage-${{ github.run_id }}
+          path: dist/SRTune-${{ env.VERSION }}-x64/
+          if-no-files-found: error
+          retention-days: 14
+
+
+  package:
+    name: Package and validate Windows x64
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Checkout packaging scripts
+        uses: actions/checkout@v4
+
+      - name: Download compiled application
+        uses: actions/download-artifact@v4
+        with:
+          name: srtune-stage-${{ github.run_id }}
+          path: dist/SRTune-${{ needs.build.outputs.version }}-x64
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Create installer, portable ZIP and update manifest
+        shell: pwsh
+        run: ./tools/build-srtune-release.ps1 -Version $env:VERSION -PackageOnly
 
       - name: Validate complete package
         shell: pwsh
@@ -142,10 +182,10 @@ jobs:
           if ($json.installer.sha256 -ne $actualHash) { throw 'Installer SHA-256 in manifest does not match.' }
           Write-Host 'SRTune package validation passed.'
 
-      - name: Upload ready-to-install package
+      - name: Upload validated package
         uses: actions/upload-artifact@v4
         with:
-          name: SRTune-${{ env.VERSION }}-run-${{ github.run_id }}-windows-x64
+          name: srtune-package-${{ github.run_id }}
           path: |
             dist/SRTune-${{ env.VERSION }}-Setup-x64.exe
             dist/SRTune-${{ env.VERSION }}-portable-x64.zip
@@ -153,6 +193,27 @@ jobs:
             dist/srtune-update.json
           if-no-files-found: error
           retention-days: 14
+
+
+  release:
+    name: Publish stable release
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release && github.ref == 'refs/heads/master' }}
+    needs: [build, package]
+    runs-on: windows-2022
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Checkout release metadata
+        uses: actions/checkout@v4
+
+      - name: Download validated release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: srtune-package-${{ github.run_id }}
+          path: dist
 
       - name: Publish next stable GitHub Release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
