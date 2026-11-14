@@ -92,6 +92,10 @@
                 <MenuBarItem Title="Zobrazení">
                     <MenuFlyoutItem x:Name="ToggleOriginalPanelMenuItem" Text="Skrýt originál" Click="ToggleOriginalPanelMenuItem_Click" />
                 </MenuBarItem>
+
+                <MenuBarItem Title="Nápověda">
+                    <MenuFlyoutItem Text="Zkontrolovat aktualizace…" Click="CheckUpdatesMenuItem_Click" />
+                </MenuBarItem>
             </MenuBar>
         </Border>
 
