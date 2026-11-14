@@ -21,7 +21,10 @@
 AppId={{9DA1AFE7-287A-44A5-84DB-4F9ADB5A988C}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppPublisher=SRTune Project
+AppPublisher=Trimenor
+AppPublisherURL=https://github.com/zafodtom/SRTune
+AppSupportURL=https://github.com/zafodtom/SRTune/issues
+AppUpdatesURL=https://github.com/zafodtom/SRTune/releases/latest
 DefaultDirName={localappdata}\Programs\SRTune
 DefaultGroupName=SRTune
 DisableProgramGroupPage=yes
