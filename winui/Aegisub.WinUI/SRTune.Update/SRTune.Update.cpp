@@ -93,8 +93,18 @@ namespace
 
         ~ProgressWindow()
         {
+            close();
+        }
+
+        void close()
+        {
             if (window)
+            {
                 DestroyWindow(window);
+                window = nullptr;
+                label = nullptr;
+                progress = nullptr;
+            }
         }
 
         void set(int value)
@@ -761,7 +771,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     std::wstring error;
     if (!latestVersion(latestText, error))
     {
-        progress.~ProgressWindow();
+        progress.close();
         message(error, MB_ICONERROR);
         return 1;
     }
@@ -769,14 +779,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     SemVer latest{};
     if (!parseVersion(latestText, latest))
     {
-        progress.~ProgressWindow();
+        progress.close();
         message(L"GitHub vrátil neplatnou verzi aktualizace.", MB_ICONERROR);
         return 1;
     }
 
     if (compare(latest, current) <= 0)
     {
-        progress.~ProgressWindow();
+        progress.close();
         message(L"Používáte aktuální verzi SRTune " + currentText + L".");
         return 0;
     }
@@ -785,12 +795,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     progress.text(L"Ověřuji informace o nové verzi…");
     if (!loadManifest(latestText, manifest, error))
     {
-        progress.~ProgressWindow();
+        progress.close();
         message(error, MB_ICONERROR);
         return 1;
     }
 
-    progress.~ProgressWindow();
+    progress.close();
 
     auto const answer = MessageBoxW(nullptr,
         (L"Je dostupná nová verze SRTune " + latestText +
@@ -813,7 +823,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             manifest.size, download, error) ||
         !verifySha256(installer, manifest.sha256))
     {
-        download.~ProgressWindow();
+        download.close();
         std::filesystem::remove(installer, fileError);
         message(error.empty()
             ? L"Stažený instalátor neprošel kontrolou SHA-256."
@@ -821,7 +831,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         return 1;
     }
 
-    download.~ProgressWindow();
+    download.close();
 
     if (MessageBoxW(nullptr,
         (L"Aktualizace SRTune " + latestText +
@@ -867,7 +877,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     auto const started = launch(
         installer.wstring(), args, true, installerCode);
 
-    installing.~ProgressWindow();
+    installing.close();
     std::filesystem::remove(installer, fileError);
 
     if (!started || (installerCode != 0 && installerCode != 3010))
