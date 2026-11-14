@@ -123,6 +123,11 @@ if (-not (Test-Path $AppExe)) {
     throw "Release build finished without SRTune.exe in $Stage"
 }
 
+$UpdateHelper = Join-Path $Stage "SRTune.Update.exe"
+if (-not (Test-Path $UpdateHelper)) {
+    throw "Release build finished without SRTune.Update.exe in $Stage"
+}
+
 Copy-Item -Force (Join-Path $Root "LICENCE") (Join-Path $Stage "LICENCE.txt")
 Copy-Item -Force (Join-Path $Root "README.md") (Join-Path $Stage "README.md")
 
@@ -278,6 +283,33 @@ if (-not $SkipInstaller) {
         Write-Host ""
         Write-Host "[SRTune] Installer:"
         Write-Host "  $InstallerFinalExe"
+
+        $InstallerInfo = Get-Item $InstallerFinalExe
+        $InstallerHash = (Get-FileHash $InstallerFinalExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        $PortableHash = (Get-FileHash $Portable -Algorithm SHA256).Hash.ToLowerInvariant()
+
+        $Checksums = @(
+            "$InstallerHash  $($InstallerInfo.Name)",
+            "$PortableHash  $([System.IO.Path]::GetFileName($Portable))"
+        )
+        Set-Content -Path (Join-Path $Dist "SHA256SUMS.txt") -Value $Checksums -Encoding utf8
+
+        $Manifest = @{
+            schema = 1
+            version = $Version
+            installer = @{
+                name = $InstallerInfo.Name
+                size = $InstallerInfo.Length
+                sha256 = $InstallerHash
+            }
+        } | ConvertTo-Json -Depth 5
+        Set-Content -Path (Join-Path $Dist "srtune-update.json") -Value $Manifest -Encoding utf8
+
+        Write-Host "[SRTune] Update manifest:"
+        Write-Host "  $(Join-Path $Dist 'srtune-update.json')"
+        Write-Host "[SRTune] SHA-256:"
+        Write-Host "  $InstallerHash  $($InstallerInfo.Name)"
+        Write-Host "  $PortableHash  $([System.IO.Path]::GetFileName($Portable))"
     } else {
         Write-Warning "Inno Setup was not found. Portable ZIP was created; installer was skipped."
     }
