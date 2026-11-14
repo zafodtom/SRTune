@@ -145,7 +145,7 @@ jobs:
       - name: Upload ready-to-install package
         uses: actions/upload-artifact@v4
         with:
-          name: SRTune-${{ env.VERSION }}-${{ github.ref_name }}-windows-x64
+          name: SRTune-${{ env.VERSION }}-run-${{ github.run_id }}-windows-x64
           path: |
             dist/SRTune-${{ env.VERSION }}-Setup-x64.exe
             dist/SRTune-${{ env.VERSION }}-portable-x64.zip
